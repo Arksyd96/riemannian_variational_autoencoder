@@ -30,18 +30,33 @@ class Downsample(nn.Module):
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=padding)
         self.norm = nn.BatchNorm2d(out_channels) if norm else None
         self.leaky_relu = nn.LeakyReLU(0.2, inplace=True)
+        self.stride = stride
+        
+        mid_channels = int(out_channels * 0.5)
+        self.conv_a = nn.Conv2d(in_channels, mid_channels, kernel_size=1, stride=1, padding=0)
+        self.conv_b = nn.Conv2d(mid_channels, mid_channels, kernel_size=3, stride=1, padding=1)
+        self.conv_c = nn.Conv2d(mid_channels, mid_channels, kernel_size=3, stride=1, padding=1)
+        self.conv_d = nn.Conv2d(mid_channels, out_channels, kernel_size=1, stride=1, padding=0)
 
     def forward(self, x):
-        x = self.conv(x)
-        if self.norm:
-            x = self.norm(x)
-        x = self.leaky_relu(x)
+        # x = self.conv(x)
+        # if self.norm:
+        #     x = self.norm(x)
+        # x = self.leaky_relu(x)
+        
+        if self.stride == 2:
+            x = F.avg_pool2d(x, kernel_size=2, stride=2, padding=0)
+        
+        x = self.leaky_relu(self.conv_a(x))
+        x = self.leaky_relu(self.conv_b(x))
+        x = self.leaky_relu(self.conv_c(x))
+        x = self.leaky_relu(self.conv_d(x))
+        x = self.norm(x) if self.norm else x
         return x
 
 class Upsample(nn.Module):
-    def __init__(self, in_channels, out_channels, output_shape, skip=False, norm=True, drop=False, drop_rate=0.5):
+    def __init__(self, in_channels, out_channels, output_shape, skip=False, norm=True):
         super(Upsample, self).__init__()
-        assert norm == False or drop == False, 'norm and drop cannot be both True'
         self.output_shape = output_shape
         self.skip = skip
 
@@ -51,13 +66,22 @@ class Upsample(nn.Module):
             self.mid_channels = out_channels
 
         # layers
-        self.up = nn.ConvTranspose2d(
-            in_channels, out_channels, kernel_size=2, stride=2, padding=0, output_padding=0
-        )
+        # self.up = nn.ConvTranspose2d(
+        #     in_channels, out_channels, kernel_size=2, stride=2, padding=0, output_padding=0
+        # )
         self.conv = nn.Conv2d(self.mid_channels, out_channels, kernel_size=3, stride=1, padding=1)
         self.norm = nn.BatchNorm2d(out_channels) if norm else None
-        self.drop = nn.Dropout(drop_rate) if drop else None
         self.leaky_relu = nn.LeakyReLU(0.2, inplace=True)
+        
+        self.up = nn.ConvTranspose2d(
+            in_channels, in_channels, kernel_size=2, stride=2, padding=0, output_padding=0
+        )
+        mid_channels = int(out_channels * 0.5)
+        self.conv_a = nn.Conv2d(in_channels, mid_channels, kernel_size=1, stride=1, padding=0)
+        self.conv_b = nn.Conv2d(mid_channels, mid_channels, kernel_size=3, stride=1, padding=1)
+        self.conv_c = nn.Conv2d(mid_channels, mid_channels, kernel_size=3, stride=1, padding=1)
+        self.conv_d = nn.Conv2d(mid_channels, out_channels, kernel_size=1, stride=1, padding=0)
+        
 
     def forward(self, x, features=None):
         x = self.up(x)
@@ -72,13 +96,16 @@ class Upsample(nn.Module):
         if self.skip:
             x = torch.cat([x, features], dim=1)
 
-        x = self.conv(x)
-        if self.norm:
-            x = self.norm(x)
-        if self.drop:
-            x = self.drop(x)
+        # x = self.conv(x)
+        # if self.norm:
+        #     x = self.norm(x)
 
-        return self.leaky_relu(x)
+        x = self.leaky_relu(self.conv_a(x))
+        x = self.leaky_relu(self.conv_b(x))
+        x = self.leaky_relu(self.conv_c(x))
+        x = self.leaky_relu(self.conv_d(x))
+        x = self.norm(x) if self.norm else x
+        return x
 
 class Encoder(nn.Module):
     def __init__(self, input_shape, latent_dim, hidden_channels):
@@ -126,8 +153,7 @@ class Decoder(nn.Module):
         # bad idea to normalize at input/output layers
         self.upsamples = nn.ModuleList(
             [
-                Upsample(self.hidden_channels[i], self.hidden_channels[i + 1], self.encoding_shapes[i + 1], skip=skip,
-                norm=(i != 0) and (i != self.hidden_channels.__len__() - 1))
+                Upsample(self.hidden_channels[i], self.hidden_channels[i + 1], self.encoding_shapes[i + 1], skip=skip)
                 for i in range(self.hidden_channels.__len__() - 1)
             ]
         )

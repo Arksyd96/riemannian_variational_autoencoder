@@ -7,19 +7,20 @@ from .base import Decoder, Encoder
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class VAE(nn.Module):
-    def __init__(self, in_channels, out_channels, num_channels, latent_dim, enc_blocks, dec_blocks, bottleneck_ratio):
+    def __init__(self, input_shape, out_channels, hidden_channels, latent_dim, skip=False):
         super(VAE, self).__init__()
         self.latent_dim = latent_dim
+        self.skip = skip
 
-        self.encoder = Encoder(in_channels, num_channels, enc_blocks, latent_dim, bottleneck_ratio).to(device)
-        self.decoder = Decoder(out_channels, num_channels, dec_blocks, latent_dim, bottleneck_ratio).to(device)   
+        self.encoder = Encoder(input_shape, latent_dim, hidden_channels).to(device)
+        self.decoder = Decoder(out_channels, latent_dim, hidden_channels[::-1], skip, self.encoder.encoding_shapes[::-1]).to(device)
 
     def encode(self, x):
-        mu, logvar = self.encoder(x)
-        return mu, logvar
+        mu, logvar, features = self.encoder(x)
+        return mu, logvar, features
 
-    def decode(self, z):
-        return self.decoder(z)
+    def decode(self, z, features=None):
+        return self.decoder(z, features)
 
     def reparametrize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
@@ -27,9 +28,10 @@ class VAE(nn.Module):
         return mu + eps * std, eps, std
 
     def forward(self, x):
-        mu, logvar = self.encode(x)
+        mu, logvar, features = self.encode(x)
         z, eps, _ = self.reparametrize(mu, logvar)
-        return dict(x=self.decode(z), z=z, eps=eps, mu=mu, logvar=logvar)
+        x = self.decode(z, features if self.skip else None)
+        return dict(x=x, z=z, eps=eps, mu=mu, logvar=logvar)
 
     def loss_function(self, recons, input, mu, logvar, beta=1.):
         # reconstruction_loss = F.binary_cross_entropy(recons, input, reduction='sum')
@@ -39,9 +41,10 @@ class VAE(nn.Module):
         return dict(loss=recon_loss + beta * kld_loss, recon_loss=recon_loss, kld_loss=kld_loss * beta)
 
     def sample(self, n_sample):
-        res = self.decoder.dec_blocks[0][0]
-        z = torch.randn(n_sample, self.latent_dim, res, res).to(device)
-        return self.decode(z)
+        # res = self.decoder.dec_blocks[0][0]
+        # z = torch.randn(n_sample, self.latent_dim, res, res).to(device)
+        z = torch.randn(n_sample, self.latent_dim).to(device)
+        return self.decode(z, None)
 
     def _tempering(self, k, K):
         beta_k = (
