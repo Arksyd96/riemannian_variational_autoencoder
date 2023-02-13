@@ -23,145 +23,120 @@ class BaseVAE(ABC):
         pass
 
 
-class Downsample(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=2, padding=1, norm=True):
-        super(Downsample, self).__init__()
+class EncodingBlock(nn.Module):
+    def __init__(self, num_channels, bottleneck_ratio, residual=True, norm=True, downrate=None, res=None):
+        super(EncodingBlock, self).__init__()
+        self.downrate = downrate
+        self.residual = residual
+        self.res = res
+
         # layers
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=padding)
-        self.norm = nn.BatchNorm2d(out_channels) if norm else None
-        self.leaky_relu = nn.LeakyReLU(0.2, inplace=True)
-        self.stride = stride
-        
-        mid_channels = int(out_channels * 0.5)
-        self.conv_a = nn.Conv2d(in_channels, mid_channels, kernel_size=1, stride=1, padding=0)
+        mid_channels = int(num_channels * bottleneck_ratio)
+        self.conv_a = nn.Conv2d(num_channels, mid_channels, kernel_size=1, stride=1, padding=0)
         self.conv_b = nn.Conv2d(mid_channels, mid_channels, kernel_size=3, stride=1, padding=1)
-        self.conv_c = nn.Conv2d(mid_channels, mid_channels, kernel_size=3, stride=1, padding=1)
-        self.conv_d = nn.Conv2d(mid_channels, out_channels, kernel_size=1, stride=1, padding=0)
+        self.conv_c = nn.Conv2d(mid_channels, num_channels, kernel_size=1, stride=1, padding=0)
+        self.norm = nn.BatchNorm2d(num_channels) if norm else None
 
     def forward(self, x):
-        # x = self.conv(x)
-        # if self.norm:
-        #     x = self.norm(x)
-        # x = self.leaky_relu(x)
-        
-        if self.stride == 2:
-            x = F.avg_pool2d(x, kernel_size=2, stride=2, padding=0)
-        
-        x = self.leaky_relu(self.conv_a(x))
-        x = self.leaky_relu(self.conv_b(x))
-        x = self.leaky_relu(self.conv_c(x))
-        x = self.leaky_relu(self.conv_d(x))
-        x = self.norm(x) if self.norm else x
+        if self.downrate is not None:
+            x = F.avg_pool2d(x, kernel_size=self.downrate, stride=self.downrate, padding=0)
+        if self.residual:
+            residual = x
+        x = F.gelu(self.conv_a(x))
+        x = F.gelu(self.conv_b(x))
+        x = self.conv_c(x)
+        if self.norm:
+            x = self.norm(x)
+        if self.residual:
+            x += residual
+        x = F.gelu(x)
         return x
 
-class Upsample(nn.Module):
-    def __init__(self, in_channels, out_channels, output_shape, skip=False, norm=True):
-        super(Upsample, self).__init__()
-        self.output_shape = output_shape
-        self.skip = skip
-
-        if self.skip:
-            self.mid_channels = in_channels * 2 if in_channels == out_channels else in_channels
-        else:
-            self.mid_channels = out_channels
+class DecodingBlock(nn.Module):
+    def __init__(self, num_channels, bottleneck_ratio, residual=True, norm=True, uprate=None, res=None):
+        super(DecodingBlock, self).__init__()
+        self.uprate = uprate
+        self.residual = residual
+        self.res = res
 
         # layers
-        # self.up = nn.ConvTranspose2d(
-        #     in_channels, out_channels, kernel_size=2, stride=2, padding=0, output_padding=0
-        # )
-        self.conv = nn.Conv2d(self.mid_channels, out_channels, kernel_size=3, stride=1, padding=1)
-        self.norm = nn.BatchNorm2d(out_channels) if norm else None
-        self.leaky_relu = nn.LeakyReLU(0.2, inplace=True)
-        
-        self.up = nn.ConvTranspose2d(
-            in_channels, in_channels, kernel_size=2, stride=2, padding=0, output_padding=0
-        )
-        mid_channels = int(out_channels * 0.5)
-        self.conv_a = nn.Conv2d(in_channels, mid_channels, kernel_size=1, stride=1, padding=0)
+        self.up = nn.ConvTranspose2d(num_channels, num_channels, kernel_size=2, stride=2, padding=0, output_padding=0)
+        mid_channels = int(num_channels * bottleneck_ratio)
+        self.conv_a = nn.Conv2d(num_channels, mid_channels, kernel_size=1, stride=1, padding=0)
         self.conv_b = nn.Conv2d(mid_channels, mid_channels, kernel_size=3, stride=1, padding=1)
-        self.conv_c = nn.Conv2d(mid_channels, mid_channels, kernel_size=3, stride=1, padding=1)
-        self.conv_d = nn.Conv2d(mid_channels, out_channels, kernel_size=1, stride=1, padding=0)
-        
+        self.conv_c = nn.Conv2d(mid_channels, num_channels, kernel_size=1, stride=1, padding=0)
+        self.norm = nn.BatchNorm2d(num_channels) if norm else None    
 
-    def forward(self, x, features=None):
-        x = self.up(x)
+    def forward(self, x):
+        if self.uprate is not None:
+            x = self.up(x)
 
         # input is CHW
-        diffY = self.output_shape[0] - x.size(2)
-        diffX = self.output_shape[1] - x.size(3)
+        diffY = self.res - x.size(2)
+        diffX = self.res - x.size(3)
 
         x = F.pad(x, [diffX // 2, diffX - diffX // 2,
                         diffY // 2, diffY - diffY // 2])
 
-        if self.skip:
-            x = torch.cat([x, features], dim=1)
-
-        # x = self.conv(x)
-        # if self.norm:
-        #     x = self.norm(x)
-
-        x = self.leaky_relu(self.conv_a(x))
-        x = self.leaky_relu(self.conv_b(x))
-        x = self.leaky_relu(self.conv_c(x))
-        x = self.leaky_relu(self.conv_d(x))
-        x = self.norm(x) if self.norm else x
+        if self.residual:
+            residual = x
+        x = F.gelu(self.conv_a(x))
+        x = F.gelu(self.conv_b(x))
+        x = self.conv_c(x)
+        if self.norm:
+            x = self.norm(x)
+        if self.residual:
+            x += residual
+        x = F.gelu(x)
         return x
 
 class Encoder(nn.Module):
-    def __init__(self, input_shape, latent_dim, hidden_channels):
+    def __init__(self, in_channels, num_channels, latent_dim, bottleneck_ratio, enc_blocks):
         super(Encoder, self).__init__()
-        assert input_shape.__len__() >= 3, 'input_shape must be (C, H, W, D?)'
-        self.input_shape = np.array(input_shape)
         self.latent_dim = latent_dim
-        self.hidden_channels = hidden_channels
-
-        self.downsamples = nn.ModuleList(
-            [Downsample(self.input_shape[0], self.hidden_channels[0], stride=1, norm=False)] +
-            [Downsample(hidden_channels[i], hidden_channels[i + 1]) for i in range(hidden_channels.__len__() - 1)]
-        )
-
-        self.encoding_shapes, shape = list(), self.input_shape[1:]
-        self.encoding_shapes.append(shape)
-        for i in range(hidden_channels.__len__() - 1):
-            shape = (shape + 1) // 2
-            self.encoding_shapes.append(shape)
+        self.enc_blocks = enc_blocks
+        self.bottleneck_ratio = bottleneck_ratio
+        
+        # layers
+        self.in_conv = nn.Conv2d(in_channels, num_channels, kernel_size=3, stride=1, padding=1)
+        self.encoder = nn.ModuleList([
+            EncodingBlock(num_channels, bottleneck_ratio, residual=True, norm=True, downrate=downrate, res=res)
+            for res, downrate in self.enc_blocks
+        ])
 
         self.flatten = nn.Flatten()
-        self.mu = nn.Linear(self.hidden_channels[-1] * np.prod(self.encoding_shapes[-1]), self.latent_dim)
-        self.log_var = nn.Linear(self.hidden_channels[-1] * np.prod(self.encoding_shapes[-1]), self.latent_dim)
+        latent_input_dim = num_channels * self.enc_blocks[-1][0] ** 2 
+        self.mu = nn.Linear(latent_input_dim, self.latent_dim)
+        self.log_var = nn.Linear(latent_input_dim, self.latent_dim)
 
     def forward(self, x):
-        features = list()
-        for downsampler in self.downsamples:
-            features.append(x)
-            x = downsampler(x)
+        x = F.gelu(self.in_conv(x))
+        for block in self.encoder:
+            x = block(x)
         x = self.flatten(x)
-        return self.mu(x), self.log_var(x), features
+        return self.mu(x), self.log_var(x)
 
 class Decoder(nn.Module):
-    def __init__(self, out_channels, latent_dim, hidden_channels, skip, encoding_shapes):
+    def __init__(self, out_channels, num_channels, latent_dim, bottleneck_ratio, dec_blocks):
         super(Decoder, self).__init__()
-        self.out_channels = out_channels
         self.latent_dim = latent_dim
-        self.hidden_channels = hidden_channels
-        self.encoding_shapes = encoding_shapes
+        self.bottleneck_ratio = bottleneck_ratio
+        self.dec_blocks = dec_blocks
+        self.num_channels = num_channels
 
-        self.fully_connected = nn.Linear(
-            self.latent_dim, self.hidden_channels[0] * np.prod(self.encoding_shapes[0])
-        )
+        latent_output_dim = num_channels * dec_blocks[0][0] ** 2
+        self.z_proj = nn.Linear(self.latent_dim, latent_output_dim)
 
-        # bad idea to normalize at input/output layers
-        self.upsamples = nn.ModuleList(
-            [
-                Upsample(self.hidden_channels[i], self.hidden_channels[i + 1], self.encoding_shapes[i + 1], skip=skip)
-                for i in range(self.hidden_channels.__len__() - 1)
-            ]
-        )
-        self.out = nn.Conv2d(self.hidden_channels[-1], self.out_channels, kernel_size=1)
+        self.decoder = nn.ModuleList([
+            DecodingBlock(num_channels, bottleneck_ratio, residual=True, norm=True, uprate=uprate, res=res)
+            for res, uprate in self.dec_blocks
+        ])
+        self.out = nn.Conv2d(num_channels, out_channels, kernel_size=3, padding=1)
 
-    def forward(self, x, features):
-        x = self.fully_connected(x)
-        x = x.view(-1, self.hidden_channels[0], *self.encoding_shapes[0])
-        for idx, upsampler in enumerate(self.upsamples):
-            x = upsampler(x, features[features.__len__() - 1 - idx] if features != None else None)
-        return torch.sigmoid(self.out(x))
+    def forward(self, x):
+        x = F.gelu(self.z_proj(x))
+        x = x.view(-1, self.num_channels, self.dec_blocks[0][0], self.dec_blocks[0][0])
+        for block in self.decoder:
+            x = block(x)
+        x = torch.sigmoid(self.out(x))
+        return x

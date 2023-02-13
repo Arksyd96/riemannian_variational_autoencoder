@@ -1,11 +1,11 @@
 
     --------------------------------------------
-    Total loss (ELBO): 47.987
-    Mean squared error: 39.224
-    Kullback-Leibler divergence: 8.763
-    PSNR: 14.123
-    SSIM: 0.566
-    FID: 0.219
+    Total loss (ELBO): 46.169
+    Mean squared error: 36.294
+    Kullback-Leibler divergence: 9.875
+    PSNR: 14.460
+    SSIM: 0.643
+    FID: 0.070
     kwargs: {}
     --------------------------------------------
     

@@ -6,8 +6,8 @@ from .vae import VAE
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class RVAE(VAE):
-    def __init__(self, input_shape, out_channels, latent_dim, hidden_channels, dt, skip, device='cuda'):
-        VAE.__init__(self, input_shape, out_channels, latent_dim, hidden_channels, skip, device)
+    def __init__(self, in_channels, out_channels, num_channels, latent_dim, bottleneck_ratio, enc_blocks, dec_blocks, dt):
+        VAE.__init__(self, in_channels, out_channels, num_channels, latent_dim, bottleneck_ratio, enc_blocks, dec_blocks)
         # step size
         self.dt = dt
 
@@ -17,10 +17,9 @@ class RVAE(VAE):
         return mu + eps * std, eps, std
 
     def hyperboloide_normal_sample(self, mu, dt):
-        noise = torch.normal(mean=0, std=np.sqrt(dt), size=mu.shape).to(device)
-        Y = torch.zeros_like(mu).to(device)
-        Y = (mu / 4) * dt + (mu / np.sqrt(2)) * noise
-        return Y
+        dM = mu  * torch.normal(mean=0, std=np.sqrt(dt), size=mu.shape).to(device)
+        dSigma = (mu / np.sqrt(2)) * torch.normal(mean=0, std=np.sqrt(dt), size=mu.shape).to(device)
+        return dM + torch.randn(mu.shape).to(device) * dSigma
 
     def loss_function(self, recons, input, mu, logvar, beta=1.):
         recon_loss = F.mse_loss(recons, input, reduction='sum').div(input.size(0))
@@ -31,4 +30,4 @@ class RVAE(VAE):
     def sample(self, n_samples, dt):
         O = torch.normal(mean=0, std=np.sqrt(dt), size=(n_samples, self.latent_dim)).to(device)
         O = self.hyperboloide_normal_sample(O, self.dt)
-        return self.decode(O, None)
+        return self.decode(O)
