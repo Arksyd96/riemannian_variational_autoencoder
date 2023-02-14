@@ -1,0 +1,13 @@
+
+    --------------------------------------------
+    Total loss (ELBO): 33.511 ↓
+    Mean squared error: 23.596 ↓
+    Kullback-Leibler divergence: 9.915 ↓
+    PSNR: 16.531 ↑
+    SSIM: 0.616 ↑
+    FID: 90.293 ↓
+    IS: (mean) 1.670 (std) 0.136 : 14.397 ↑
+    LPIPS: 0.315 ↓
+    kwargs: {'ds': 'mnist'}
+    --------------------------------------------
+    

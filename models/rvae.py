@@ -22,12 +22,13 @@ class RVAE(VAE):
         return dM + torch.randn(mu.shape).to(device) * dSigma
 
     def loss_function(self, recons, input, mu, logvar, beta=1.):
+        # recon_loss = F.binary_cross_entropy(recons, input, reduction='sum').div(input.size(0))
         recon_loss = F.mse_loss(recons, input, reduction='sum').div(input.size(0))
-        kld_loss = -0.5 * torch.sum(logvar - mu.pow(2) - logvar.exp() + self.dt + np.log(self.dt))
+        kld_loss = -0.5 * torch.sum(logvar - mu.pow(2) - logvar.exp() + 1)# self.dt + np.log(self.dt))
         kld_loss = kld_loss.div(input.size(0))
         return dict(loss=recon_loss + beta * kld_loss, recon_loss=recon_loss, kld_loss=kld_loss * beta)
 
-    def sample(self, n_samples, dt):
-        O = torch.normal(mean=0, std=np.sqrt(dt), size=(n_samples, self.latent_dim)).to(device)
+    def sample(self, n_samples):
+        O = torch.normal(mean=0, std=1, size=(n_samples, self.latent_dim)).to(device)
         O = self.hyperboloide_normal_sample(O, self.dt)
         return self.decode(O)

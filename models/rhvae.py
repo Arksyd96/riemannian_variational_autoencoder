@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import grad
 from .hvae import HVAE
-from .base import Downsample
+from .new_base import Downsample
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

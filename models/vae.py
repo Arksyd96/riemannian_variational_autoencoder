@@ -33,7 +33,7 @@ class VAE(nn.Module):
         return dict(x=x, z=z, eps=eps, mu=mu, logvar=logvar)
 
     def loss_function(self, recons, input, mu, logvar, beta=1.):
-        # reconstruction_loss = F.binary_cross_entropy(recons, input, reduction='sum')
+        # recon_loss = F.binary_cross_entropy(recons, input, reduction='sum').div(input.size(0))
         recon_loss = F.mse_loss(recons, input, reduction='sum').div(input.size(0))
         kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
         kld_loss = kld_loss.div(input.size(0))
@@ -131,7 +131,6 @@ class VAE(nn.Module):
         """
         Simulate p(x|z) to generate an image
         """
-        assert self.skip == False or x is not None, "x must be provided if skip connections are used"
         if z is None:
             z = self.normal.sample(sample_shape=(n_samples,)).to(self.device)
 
@@ -142,5 +141,5 @@ class VAE(nn.Module):
             recon_x, z, _, _, _, features = self.forward(x)
 
         z.requires_grad_(True)
-        recon_x = self.decode(z, features if self.skip else None)
+        recon_x = self.decode(z)
         return recon_x

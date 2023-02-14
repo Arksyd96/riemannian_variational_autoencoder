@@ -8,7 +8,8 @@ from .vae import VAE
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class HVAE(VAE):
-    def __init__(self, input_shape, out_channels, latent_dim, hidden_channels, n_lf=3, eps_lf=0.01, beta_zero=0.3, skip=False, device=device):
+    def __init__(self, in_channels, out_channels, num_channels, latent_dim, bottleneck_ratio, enc_blocks, 
+        dec_blocks, n_lf=3, eps_lf=0.01, beta_zero=0.3):
         """
         Inputs:
         -------
@@ -19,7 +20,7 @@ class HVAE(VAE):
         model_type (str): Model type for VAR (mlp, convnet)
         latent_dim (int): Latentn dimension
         """
-        VAE.__init__(self, input_shape, out_channels, latent_dim, hidden_channels, skip, device)
+        VAE.__init__(self, in_channels, out_channels, num_channels, latent_dim, bottleneck_ratio, enc_blocks, dec_blocks)
 
         self.vae_forward = super().forward
         self.n_lf = n_lf
@@ -32,18 +33,24 @@ class HVAE(VAE):
             torch.Tensor([beta_zero]), requires_grad=False
         )
 
+        self.normal = torch.distributions.MultivariateNormal(
+            loc=torch.zeros(latent_dim).to(device),
+            covariance_matrix=torch.eye(latent_dim).to(device),
+        )
+
     def forward(self, x):
         """
         The HVAE model
         """
 
-        recon_x, z0, eps0, mu, log_var, features = self.vae_forward(x)
-        gamma = torch.randn_like(z0, device=self.device)
+        output = self.vae_forward(x)
+        recon_x, z0, eps0, mu, logvar = output['x'], output['z'], output['eps'], output['mu'], output['logvar']
+        gamma = torch.randn_like(z0, device=device)
         rho = gamma / self.beta_zero_sqrt
         z = z0
         beta_sqrt_old = self.beta_zero_sqrt
 
-        recon_x = self.decode(z, features if self.skip else None)
+        recon_x = self.decode(z)
 
         for k in range(self.n_lf):
 
@@ -61,7 +68,7 @@ class HVAE(VAE):
             # 2nd leapfrog step
             z = z + self.eps_lf * rho_
 
-            recon_x = self.decode(z, features if self.skip else None)
+            recon_x = self.decode(z)
 
             U = -self.log_p_xz(recon_x, x, z).sum()
             g = grad(U, z, create_graph=True)[0]
@@ -74,7 +81,7 @@ class HVAE(VAE):
             rho = (beta_sqrt_old / beta_sqrt) * rho__
             beta_sqrt_old = beta_sqrt
 
-        return recon_x, z, z0, rho, eps0, gamma, mu, log_var
+        return dict(x=recon_x, z=z, z0=z0, rho=rho, eps=eps0, gamma=gamma, mu=mu, logvar=logvar)
 
     def loss_function(self, recon_x, x, z0, zK, rhoK, eps0, gamma, mu, log_var):
 
@@ -90,17 +97,17 @@ class HVAE(VAE):
         """
         Estimate log(p(x)) using importance sampling on q(z|x)
         """
-        mu, log_var, features = self.encode(x.view(-1, self.input_shape))
-        Eps = torch.randn(sample_size, x.size()[0], self.latent_dim, device=self.device)
-        Z = (mu + Eps * torch.exp(0.5 * log_var)).reshape(-1, self.latent_dim)
+        mu, logvar = self.encode(x)
+        Eps = torch.randn(sample_size, x.size()[0], self.latent_dim, device=device)
+        Z = (mu + Eps * torch.exp(0.5 * logvar)).reshape(-1, self.latent_dim)
 
-        recon_X = self.decode(Z, features if self.skip else None)
+        recon_X = self.decode(Z)
 
-        gamma = torch.randn_like(Z, device=self.device)
+        gamma = torch.randn_like(Z, device=device)
         rho = gamma / self.beta_zero_sqrt
         rho0 = rho
         beta_sqrt_old = self.beta_zero_sqrt
-        X_rep = x.repeat(sample_size, 1, 1, 1).reshape(-1, self.input_shape)
+        X_rep = x.repeat(sample_size, 1, 1, 1)
 
         for k in range(self.n_lf):
 
@@ -113,7 +120,7 @@ class HVAE(VAE):
             # step 2
             Z = Z + self.eps_lf * rho_
 
-            recon_X = self.decode(Z, features if self.skip else None)
+            recon_X = self.decode(Z)
 
             U = self.hamiltonian(recon_X, X_rep, Z, rho_, name='HVAE')
             g = grad(U, Z, create_graph=True)[0]
@@ -129,7 +136,7 @@ class HVAE(VAE):
         bce = F.binary_cross_entropy(recon_X, X_rep, reduction="none")
 
         # compute densities to recover p(x)
-        logpxz = -bce.reshape(sample_size, -1, self.input_shape).sum(dim=2)  # log(p(X|Z))
+        logpxz = -bce.sum(dim=2)  # log(p(X|Z))
 
         logpz = self.log_z(Z).reshape(sample_size, -1)  # log(p(Z))
 
@@ -137,11 +144,11 @@ class HVAE(VAE):
             sample_size, -1
         )  # log(p(rho0))
         logrho = self.normal.log_prob(rho).reshape(sample_size, -1)  # log(p(rho_K))
-        logqzx = self.normal.log_prob(Eps) - 0.5 * log_var.sum(dim=1)  # q(Z_0|X)
+        logqzx = self.normal.log_prob(Eps) - 0.5 * logvar.sum(dim=1)  # q(Z_0|X)
 
         logpx = (logpxz + logpz + logrho - logrho0 - logqzx).logsumexp(dim=0).mean(
             dim=0
-        ) - torch.log(torch.Tensor([sample_size]).to(self.device))
+        ) - torch.log(torch.Tensor([sample_size]).to(device))
         return logpx
 
     def hamiltonian(self, recon_x, x, z, rho, G_inv=None, G_log_det=None, name = None):
