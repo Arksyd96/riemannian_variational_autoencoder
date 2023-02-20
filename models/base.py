@@ -21,127 +21,97 @@ class BaseVAE(ABC):
     def loss_function(self):
         pass
 
-
-class EncodingBlock(nn.Module):
-    def __init__(self, num_channels, bottleneck_ratio, residual=True, norm=True, downrate=None, res=None):
-        super(EncodingBlock, self).__init__()
-        self.downrate = downrate
-        self.residual = residual
-        self.res = res
-
-        # layers
-        mid_channels = int(num_channels * bottleneck_ratio)
-        self.conv_a = nn.Conv2d(num_channels, mid_channels, kernel_size=1, stride=1, padding=0)
-        self.conv_b = nn.Conv2d(mid_channels, mid_channels, kernel_size=3, stride=1, padding=1)
-        self.conv_c = nn.Conv2d(mid_channels, mid_channels, kernel_size=3, stride=1, padding=1)
-        self.conv_d = nn.Conv2d(mid_channels, num_channels, kernel_size=1, stride=1, padding=0)
-        self.norm = nn.BatchNorm2d(num_channels) if norm else None
+class DoubleConv(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(DoubleConv, self).__init__()
+        self.double_conv = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
 
     def forward(self, x):
-        if self.downrate is not None:
-            x = F.max_pool2d(x, kernel_size=self.downrate, stride=self.downrate, padding=0)
-        if self.residual:
-            residual = x
-        x = F.gelu(self.conv_a(x))
-        x = F.gelu(self.conv_b(x))
-        x = F.gelu(self.conv_c(x))
-        x = self.conv_d(x)
-        if self.norm:
-            x = self.norm(x)
-        if self.residual:
-            x += residual
-        x = F.gelu(x)
+        x = self.double_conv(x)
+        return x
+
+
+class EncodingBlock(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(EncodingBlock, self).__init__()
+        # layers
+        self.down_conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=2, padding=1)
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.double_conv = DoubleConv(out_channels, out_channels)
+
+
+    def forward(self, x):
+        x = F.relu(self.down_conv(x))
+        x = self.bn(x)
+        x = self.double_conv(x)
         return x
 
 class DecodingBlock(nn.Module):
-    def __init__(self, num_channels, bottleneck_ratio, residual=True, norm=True, uprate=None, res=None):
+    def __init__(self, in_channels, out_channels):
         super(DecodingBlock, self).__init__()
-        self.uprate = uprate
-        self.residual = residual
-        self.res = res
-
-        # layers
-        self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.conv_u = nn.Conv2d(num_channels, num_channels, kernel_size=3, stride=1, padding=1)
-        mid_channels = int(num_channels * bottleneck_ratio)
-        self.conv_a = nn.Conv2d(num_channels, mid_channels, kernel_size=1, stride=1, padding=0)
-        self.conv_b = nn.Conv2d(mid_channels, mid_channels, kernel_size=3, stride=1, padding=1)
-        self.conv_c = nn.Conv2d(mid_channels, mid_channels, kernel_size=3, stride=1, padding=1)
-        self.conv_d = nn.Conv2d(mid_channels, num_channels, kernel_size=1, stride=1, padding=0)   
-        self.norm = nn.BatchNorm2d(num_channels) if norm else None    
+        self.up_conv = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2, output_padding=0)
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.double_conv = DoubleConv(out_channels, out_channels)
 
     def forward(self, x):
-        if self.uprate is not None:
-            x = self.up(x)
-            x = F.gelu(self.conv_u(x))
-
-        # input is CHW
-        # diffY = self.res - x.size(2)
-        # diffX = self.res - x.size(3) 
-
-        # x = F.pad(x, [diffX // 2, diffX - diffX // 2,
-        #                 diffY // 2, diffY - diffY // 2])
-
-        if self.residual:
-            residual = x
-        x = F.gelu(self.conv_a(x))
-        x = F.gelu(self.conv_b(x))
-        x = F.gelu(self.conv_c(x))
-        x = self.conv_d(x)
-        if self.norm:
-            x = self.norm(x)
-        if self.residual:
-            x += residual
-        x = F.gelu(x)
+        x = F.relu(self.up_conv(x))
+        x = self.bn(x)
+        x = self.double_conv(x)
         return x
 
 class Encoder(nn.Module):
-    def __init__(self, in_channels, num_channels, latent_dim, bottleneck_ratio, enc_blocks):
+    def __init__(self, image_shape, latent_dim, hidden_channels):
         super(Encoder, self).__init__()
         self.latent_dim = latent_dim
-        self.enc_blocks = enc_blocks
-        self.bottleneck_ratio = bottleneck_ratio
+        self.hidden_channels = hidden_channels
         
         # layers
-        self.in_conv = nn.Conv2d(in_channels, num_channels, kernel_size=3, stride=1, padding=1)
+        self.in_conv = nn.Conv2d(image_shape[0], hidden_channels[0], kernel_size=3, stride=1, padding=1)
         self.encoder = nn.ModuleList([
-            EncodingBlock(num_channels, bottleneck_ratio, residual=True, norm=True, downrate=downrate, res=res)
-            for res, downrate in self.enc_blocks
+            EncodingBlock(hidden_channels[i], hidden_channels[i + 1])
+            for i in range(len(hidden_channels) - 1)
         ])
 
         self.flatten = nn.Flatten()
-        latent_input_dim = num_channels * self.enc_blocks[-1][0] ** 2 
+        self.image_shape = image_shape[-1] // (2 ** (len(hidden_channels) - 1))
+        latent_input_dim = self.hidden_channels[-1] * self.image_shape ** 2 
         self.mu = nn.Linear(latent_input_dim, self.latent_dim)
         self.logvar = nn.Linear(latent_input_dim, self.latent_dim)
 
     def forward(self, x):
-        x = F.gelu(self.in_conv(x))
+        x = F.relu(self.in_conv(x))
         for block in self.encoder:
             x = block(x)
         x = self.flatten(x)
         return self.mu(x), self.logvar(x)
 
 class Decoder(nn.Module):
-    def __init__(self, out_channels, num_channels, latent_dim, bottleneck_ratio, dec_blocks):
+    def __init__(self, image_shape, out_channels, latent_dim, hidden_channels):
         super(Decoder, self).__init__()
         self.latent_dim = latent_dim
-        self.bottleneck_ratio = bottleneck_ratio
-        self.dec_blocks = dec_blocks
-        self.num_channels = num_channels
+        self.hidden_channels = hidden_channels
 
-        latent_output_dim = num_channels * dec_blocks[0][0] ** 2
+        self.image_shape = image_shape[-1] // (2 ** (len(hidden_channels) - 1))
+        latent_output_dim = self.hidden_channels[0] * self.image_shape ** 2
         self.z_proj = nn.Linear(self.latent_dim, latent_output_dim)
 
         self.decoder = nn.ModuleList([
-            DecodingBlock(num_channels, bottleneck_ratio, residual=True, norm=True, uprate=uprate, res=res)
-            for res, uprate in self.dec_blocks
+            DecodingBlock(self.hidden_channels[i], self.hidden_channels[i + 1])
+            for i in range(len(self.hidden_channels) - 1)
         ])
-        self.out = nn.Conv2d(num_channels, out_channels, kernel_size=3, padding=1)
+        self.out = nn.Conv2d(self.hidden_channels[-1], out_channels, kernel_size=3, padding=1)
 
     def forward(self, x):
-        x = F.gelu(self.z_proj(x))
-        x = x.view(-1, self.num_channels, self.dec_blocks[0][0], self.dec_blocks[0][0])
+        x = F.relu(self.z_proj(x))
+        x = x.view(-1, self.hidden_channels[0], self.image_shape, self.image_shape)
         for block in self.decoder:
             x = block(x)
-        x = torch.sigmoid(self.out(x))
+        x = self.out(x)
         return x
